@@ -1,0 +1,315 @@
+---
+title: "Homework_4"
+author: "Lindley Slipetz"
+date: "7/13/2021"
+output: pdf_document
+---
+
+For this homework, I will again be using the childhood adversity and traumatic stress among inpatients at a psychiatric hospital in the Baltimore area from 1993-1995. The data include diagnoses, psychological symptoms, physical and sexual abuse, post-traumatic stress disorder, self-destructive behavior, and demographic data. Since this is a multinomial model rather than an ordered model, I will be using different variables. I will be predicting diagnosis (affective disorders, dissociative disorders, psychotic disorders, and substance use disorders) from positive affect, anxiety, depression, paranoid ideation, psychoticism, sexual impulsiveness, and self harm.
+
+Let's load the packages and data!
+
+```{r load, warning = FALSE, message = FALSE}
+require(tidyverse)
+require(aod) # for wald.test() function
+require(dplyr)
+require(ggplot2)
+require(haven)
+require(lmtest) # for lrtest() function
+require(MASS)
+require(mlogit)
+require(MNP)
+require(nnet)
+full_data <- read.table(file = 'G:\\My Drive\\ICPSR\\ML\\HW_2\\36168-0001-Data.tsv', sep = '\t', header = TRUE)
+
+```
+
+The diagnosis variable has a ton of levels, so I think it'd be hard to analyze it for specific diagnoses. I'm going to group different diagnoses together into their diagnostic categories so we're left with 4 levels. I will also be eliminating the levels that have very few respondents.
+
+Affective disorders = 0
+Dissociative disorders = 1
+Psychotic disorders = 2
+Substance use disorders = 3
+
+
+```{r diag}
+full_data <- full_data %>%
+  mutate(dx_cat = case_when (
+    DX == "AFF" ~ 0,
+    DX == "BIP" ~ 0,
+    DX == "ANX" ~ 0,
+    DX == "DEP" ~ 0,
+    DX == "DIS" ~ 1,
+    DX == "MPD" ~ 1, 
+    DX == "SCZ" ~ 2,
+    DX == "SUB" ~ 3, 
+    TRUE ~ as.numeric(NA)))
+```
+
+Okay, now let's subset the data.
+
+```{r subset}
+subset_data <- full_data %>%
+  dplyr::select(dx_cat, ID, PASUM, SCL_ANX, SCL_DEP, SCL_PAR, SCL_PSY,SISDB_SEXIMP, SISDB_SHARM)
+```
+
+
+Now we're going to deal with missing data. 
+
+```{r NA_check}
+df <- as.data.frame(
+  cbind(
+    lapply(
+      lapply(subset_data, is.na), sum)
+    )
+  )
+
+rownames(subset(df, df$V1 != 0))
+```
+Well, there's a lot of columns with missing data (of course we expect dx_cat to have some because we excluded some diagnoses). 
+
+Let's count the NA's.
+```{r NA_count}
+sapply(subset_data, function(x) sum(is.na(x)))
+```
+
+I'm not surprised by the dx_cat missing data and the other variables don't look too bad. I'll just omit the NAs.
+
+```{r NA}
+NA_data <- na.omit(subset_data)
+
+```
+
+
+Let's look at histograms of the data.
+
+```{r scale_graphs}
+ hist(NA_data$SCL_ANX)
+ hist(NA_data$SCL_DEP)
+ hist(NA_data$SCL_PAR)
+ hist(NA_data$SCL_PSY)
+hist(NA_data$dx_cat)
+hist(NA_data$PASUM)
+hist(NA_data$SISDB_SEXIMP)
+hist(NA_data$SISDB_SHARM)
+```
+ 
+
+ 
+ 
+ Time for a multinomial model!
+ 
+```{r long}
+dx_mlogit <- NA_data %>% dplyr::select(ID, dx_cat, PASUM, SCL_ANX, SCL_DEP, SCL_PAR, SCL_PSY,SISDB_SEXIMP, SISDB_SHARM)
+dx_mlogit_long <- dfidx(dx_mlogit, choice = "dx_cat", shape = "wide")
+head(dx_mlogit_long, n = 12) # Take a look at the data
+
+```
+```{r model_2}
+out1_2 <- mlogit(dx_cat ~ 0 | PASUM + SCL_ANX + SCL_DEP + SCL_PAR + SCL_PSY + SISDB_SEXIMP + SISDB_SHARM, 
+                data = dx_mlogit_long, reflevel = 1) 
+summary(out1_2)
+
+``` 
+ 
+ Here's a table of the results.
+ 
+ 
+```{r table, results='asis', header = FALSE}
+library(stargazer)
+stargazer(out1_2)
+```
+
+Let's look at the average predicted probabilities.
+
+```{r pred_1}
+colMeans(fitted(out1_2, type = "probabilities"))
+```
+
+The average predicted probability is highest for affective disorders and lowest for psychotic disorders.
+
+
+
+Simulating the coefficients.
+
+```{r sim}
+set.seed(1234)
+simb <- mvrnorm(n = 1000, mu = coef(out1_2), Sigma = vcov(out1_2))
+simb1 <- simb[, seq(1, 16, 2)] # simulated coefficients for dissociative
+simb2 <- simb[, seq(2, 17, 2)] # simulated coefficients for psychotic
+simb3 <- simb[, seq(3, 18, 2)] # simulated coefficients for substance use
+```
+
+Predicted probabilities as function of self-harm.
+
+```{r pred_3}
+plot_out_1 <- matrix(NA, nrow = 3, ncol = 12)
+colnames(plot_out_1) <- paste0(rep(c("Mean_", "Lower_", "Upper_"), times = 4),
+rep(1:4, each = 3))
+for (i in 1:3){ # for each value of education...
+# Create the profile + compute the (simulated) linear predictors
+Xb1 <- (simb1[, 1] # intercept
++ simb1[, 2] * i # SH
++ simb1[, 3] * mean(NA_data$PASUM, na.rm = TRUE) # PA
++ simb1[, 4] * mean(NA_data$SCL_ANX, na.rm = TRUE) # Anxiety
++ simb1[, 5] * mean(NA_data$SCL_DEP, na.rm = TRUE) # Depression
++ simb1[, 6] * mean(NA_data$SCL_PAR, na.rm = TRUE) # Paranoia
++ simb1[, 7] * mean(NA_data$SCL_PSY, na.rm = TRUE) # Psychotic
++ simb1[, 8] * mean(NA_data$SISDB_SEXIMP, na.rm = TRUE)) # Sex Impulse
+
+Xb2 <- (simb2[, 1] # intercept
++ simb2[, 2] * i # SH
++ simb2[, 3] * mean(NA_data$PASUM, na.rm = TRUE) # PA
++ simb2[, 4] * mean(NA_data$SCL_ANX, na.rm = TRUE) # Anxiety
++ simb2[, 5] * mean(NA_data$SCL_DEP, na.rm = TRUE) # Depression
++ simb2[, 6] * mean(NA_data$SCL_PAR, na.rm = TRUE) # Paranoia
++ simb2[, 7] * mean(NA_data$SCL_PSY, na.rm = TRUE) # Psychotic
++ simb2[, 8] * mean(NA_data$SISDB_SEXIMP, na.rm = TRUE)) # Sex Impulse
+Xb3 <- (simb3[, 1] # intercept
++ simb3[, 2] * i # SH
++ simb3[, 3] * mean(NA_data$PASUM, na.rm = TRUE) # PA
++ simb3[, 4] * mean(NA_data$SCL_ANX, na.rm = TRUE) # Anxiety
++ simb3[, 5] * mean(NA_data$SCL_DEP, na.rm = TRUE) # Depression
++ simb3[, 6] * mean(NA_data$SCL_PAR, na.rm = TRUE) # Paranoia
++ simb3[, 7] * mean(NA_data$SCL_PSY, na.rm = TRUE) # Psychotic
++ simb3[, 8] * mean(NA_data$SISDB_SEXIMP, na.rm = TRUE)) # Sex Impulse
+denominator <- (1 + exp(Xb2) + exp(Xb3) +exp(Xb1))
+probs <- matrix(NA, nrow = 1000, ncol = 4) # matrix to store simulated predicted probs
+probs[, 1] <- 1 / denominator
+probs[, 2] <- exp(Xb1) / denominator
+probs[, 3] <- exp(Xb2) / denominator
+probs[, 4] <- exp(Xb3) / denominator
+# Store the simuated means and CIs
+plot_out_1[i, c(1, 4, 7, 10)] <- colMeans(probs)
+CIs <- apply(probs, 2, quantile, probs = c(0.025, 0.975))
+plot_out_1[i, 2:3] <- CIs[, 1]
+plot_out_1[i, 5:6] <- CIs[, 2]
+plot_out_1[i, 8:9] <- CIs[, 3]
+plot_out_1[i, 11:12] <- CIs[, 4]
+}
+plot_out_1
+```
+
+Predicted probabilites of positive affect
+
+```{r pred}
+plot_out_2 <- matrix(NA, nrow = 3, ncol = 12)
+colnames(plot_out_2) <- paste0(rep(c("Mean_", "Lower_", "Upper_"), times = 4),
+rep(1:4, each = 3))
+for (i in 1:3){ # for each value of education...
+# Create the profile + compute the (simulated) linear predictors
+Xb1 <- (simb1[, 1] # intercept
++ simb1[, 2] * i # PA
++ simb1[, 3] * mean(NA_data$SISDB_SHARM, na.rm = TRUE) # SH
++ simb1[, 4] * mean(NA_data$SCL_ANX, na.rm = TRUE) # Anxiety
++ simb1[, 5] * mean(NA_data$SCL_DEP, na.rm = TRUE) # Depression
++ simb1[, 6] * mean(NA_data$SCL_PAR, na.rm = TRUE) # Paranoia
++ simb1[, 7] * mean(NA_data$SCL_PSY, na.rm = TRUE) # Psychotic
++ simb1[, 8] * mean(NA_data$SISDB_SEXIMP, na.rm = TRUE)) # Sex Impulse
+
+Xb2 <- (simb2[, 1] # intercept
++ simb2[, 2] * i # PA
++ simb2[, 3] * mean(NA_data$SISDB_SHARM, na.rm = TRUE) # SH
++ simb2[, 4] * mean(NA_data$SCL_ANX, na.rm = TRUE) # Anxiety
++ simb2[, 5] * mean(NA_data$SCL_DEP, na.rm = TRUE) # Depression
++ simb2[, 6] * mean(NA_data$SCL_PAR, na.rm = TRUE) # Paranoia
++ simb2[, 7] * mean(NA_data$SCL_PSY, na.rm = TRUE) # Psychotic
++ simb2[, 8] * mean(NA_data$SISDB_SEXIMP, na.rm = TRUE)) # Sex Impulse
+Xb3 <- (simb3[, 1] # intercept
++ simb3[, 3] * mean(NA_data$SISDB_SHARM, na.rm = TRUE) # PA
++ simb3[, 2] * i # SH
++ simb3[, 4] * mean(NA_data$SCL_ANX, na.rm = TRUE) # Anxiety
++ simb3[, 5] * mean(NA_data$SCL_DEP, na.rm = TRUE) # Depression
++ simb3[, 6] * mean(NA_data$SCL_PAR, na.rm = TRUE) # Paranoia
++ simb3[, 7] * mean(NA_data$SCL_PSY, na.rm = TRUE) # Psychotic
++ simb3[, 8] * mean(NA_data$SISDB_SEXIMP, na.rm = TRUE)) # Sex Impulse
+denominator <- (1 + exp(Xb2) + exp(Xb3) +exp(Xb1))
+probs <- matrix(NA, nrow = 1000, ncol = 4) # matrix to store simulated predicted probs
+probs[, 1] <- 1 / denominator
+probs[, 2] <- exp(Xb1) / denominator
+probs[, 3] <- exp(Xb2) / denominator
+probs[, 4] <- exp(Xb3) / denominator
+# Store the simuated means and CIs
+plot_out_2[i, c(1, 4, 7, 10)] <- colMeans(probs)
+CIs <- apply(probs, 2, quantile, probs = c(0.025, 0.975))
+plot_out_2[i, 2:3] <- CIs[, 1]
+plot_out_2[i, 5:6] <- CIs[, 2]
+plot_out_2[i, 8:9] <- CIs[, 3]
+plot_out_2[i, 11:12] <- CIs[, 4]
+}
+plot_out_2
+```
+
+Plot of self harm.
+```{r SH_plot}
+plot_out_1 <- as.data.frame(plot_out_1)
+plot_out_1$SISDB_SHARM <- c(1:3)
+g1 <- ggplot(data = plot_out_1) +
+geom_pointrange(aes(x = SISDB_SHARM - 0.1, y = Mean_1, ymin = Lower_1, ymax = Upper_1),
+shape = 17, color = "red") +
+geom_pointrange(aes(x = SISDB_SHARM, y = Mean_2, ymin = Lower_2, ymax = Upper_2),
+shape = 16, color = "black") +
+geom_pointrange(aes(x = SISDB_SHARM + 0.1, y = Mean_3, ymin = Lower_3, ymax = Upper_3),
+shape = 15, color = "blue") +
+xlab("Self Harm") +
+ylim(0.0, 0.8) + theme_bw()
+g1
+```
+
+The graph shows there's not much of a difference across levels of self harm.
+
+```{r PA_plot}
+plot_out_2 <- as.data.frame(plot_out_2)
+plot_out_2$PASUM <- c(1:3)
+g2 <- ggplot(data = plot_out_2) +
+geom_pointrange(aes(x = PASUM - 0.1, y = Mean_1, ymin = Lower_1, ymax = Upper_1),
+                shape = 17, color = "red") +
+geom_pointrange(aes(x = PASUM, y = Mean_2, ymin = Lower_2, ymax = Upper_2),
+shape = 16, color = "black") +
+geom_pointrange(aes(x = PASUM + 0.1, y = Mean_3, ymin = Lower_3, ymax = Upper_3),
+shape = 15, color = "blue") +
+xlab("Positive Affect") + ylab("") +
+ylim(0.0, 0.8) + theme_bw()
+g2
+```
+
+Psychotic disorders show some difference between low positive affect and mid to high positive affect, but the actual coefficient is not significant.
+
+Let's try a different baseline.
+
+```{r logit_2}
+out1_1 <- mlogit(dx_cat ~ 0 | PASUM + SCL_ANX + SCL_DEP + SCL_PAR + SCL_PSY + SISDB_SEXIMP + SISDB_SHARM, 
+                data = dx_mlogit_long, reflevel = 2) 
+summary(out1_1)
+
+``` 
+
+The model now has three significant coefficients. This difference makes sense because there is a different baseline, so the coefficients are interpreted relative to a different baseline. We still see the significant self harm coefficient for 1 relative to 0 (which we had for 0 relative to 1).
+
+Now we'll test the IIA assumption. First, estimate models excluding each choice
+
+```{r IIA_1}
+out1 <- mlogit(dx_cat ~ 0 | PASUM + SCL_ANX + SCL_DEP + SCL_PAR + SCL_PSY + SISDB_SEXIMP + SISDB_SHARM, data = dx_mlogit_long,
+alt.subset = c("2", "3"))
+out2 <- mlogit(dx_cat ~ 0 | PASUM + SCL_ANX + SCL_DEP + SCL_PAR + SCL_PSY + SISDB_SEXIMP + SISDB_SHARM, data = dx_mlogit_long,
+alt.subset = c("1", "3"))
+out3 <- mlogit(dx_cat ~ 0 | PASUM + SCL_ANX + SCL_DEP + SCL_PAR + SCL_PSY + SISDB_SEXIMP + SISDB_SHARM, data = dx_mlogit_long,
+alt.subset = c("1", "2"))
+
+```
+Conduct Hausman-MacFadden tests
+```{r HM}
+hmftest(out1_1, out1)
+```
+A p-value of 1...well, that's not good. IIA has been rejected.
+
+
+Predicted probabilites with affective disorders left out.
+```{r pred_2}
+out4 <- mlogit(dx_cat ~ 0 | PASUM + SCL_ANX + SCL_DEP + SCL_PAR + SCL_PSY + SISDB_SEXIMP + SISDB_SHARM, data = dx_mlogit_long,
+alt.subset = c("1", "2", "3"))
+colMeans(fitted(out4, type = "probabilities"))
+
+```
+
+The proportions between the categories are maintained when affective disorders are removed (though the values individually increase).
